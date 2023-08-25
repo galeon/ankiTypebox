@@ -5,9 +5,9 @@ from aqt.reviewer import Reviewer
 from anki.utils import stripHTML
 from aqt import gui_hooks
 from aqt import mw
+import difflib
 
 Reviewer.typeboxAnsPat = r"\[\[typebox:(.*?)\]\]"
-
 
 def typeboxAnsFilter(self, buf: str) -> str:
 	# replace the typebox pattern for questions, and if question has typebox,
@@ -106,7 +106,7 @@ def typeboxAnsAnswerFilter(self, buf: str) -> str:
 		cor = cor.replace("\xa0", " ")
 		cor = cor.replace(newline_marker, "\n")
 		cor = cor.strip()
-		res = self.correct(given, cor, showBad=False)
+		res = compare_strings(given, cor)
 	else:
 		res = self.typedAnswer
 
@@ -139,7 +139,6 @@ pre {
 		s = "<hr id=answer>" + s
 	return re.sub(self.typeboxAnsPat, s, buf)
 
-
 def focusTypebox(card):
     """
     Tell UI to autofocus on the typebox when the card has typebox in it.
@@ -151,6 +150,21 @@ def focusTypebox(card):
     if hasattr(mw.reviewer, "_typebox_note") and mw.reviewer._typebox_note:
         mw.web.setFocus()
 
+def compare_strings(actual, expected):
+    diff = difflib.ndiff(actual, expected)
+
+    diff_string = ''
+    for line in diff:
+        if line.startswith('- '):
+            diff_string += f"<font color='red'><strike>{line[2:]}</strike></font>"
+        elif line.startswith('+ '):
+            diff_string += f"<font color='red'>{line[2:]}</font>"
+        elif line.startswith('  '):
+            diff_string += f"<font color='green'>{line[2:]}</font>"
+        else:
+            diff_string += line[2:]
+
+    return diff_string
 
 gui_hooks.reviewer_did_show_question.append(focusTypebox)
 Reviewer.typeAnsFilter = typeboxAnsFilter
