@@ -5,10 +5,9 @@ from aqt.reviewer import Reviewer
 from anki.utils import stripHTML
 from aqt import gui_hooks
 from aqt import mw
-import difflib
-import unicodedata as ucd
 
 Reviewer.typeboxAnsPat = r"\[\[typebox:(.*?)\]\]"
+Reviewer.newline_placeholder = "__typeboxnewline__"
 
 def typeboxAnsFilter(self, buf: str) -> str:
 	# replace the typebox pattern for questions, and if question has typebox,
@@ -29,6 +28,7 @@ def typeboxAnsFilter(self, buf: str) -> str:
 
 	return self.typeAnsAnswerFilter(buf)
 
+
 def _set_font_details_from_card(reviewer, style, selector):
 	selector_rules = [r for r in style.rules if hasattr(r, "selector")]
 	card_style = next(
@@ -42,12 +42,12 @@ def _set_font_details_from_card(reviewer, style, selector):
 
 
 def typeboxAnsQuestionFilter(self, buf: str) -> str:
+	self.typeCorrect = None
 	m = re.search(self.typeboxAnsPat, buf)
 	if not m:
 		return buf
 	fld = m.group(1)
 	# loop through fields for a match
-	self.typeCorrect = None
 	fields = self.card.model()["flds"]
 	for f in fields:
 		if f["name"] == fld:
@@ -85,30 +85,35 @@ function typeboxAns() {
 		buf,
 		)
 
-
 def typeboxAnsAnswerFilter(self, buf: str) -> str:
+	if not self.typeCorrect:
+		return re.sub(self.typeboxAnsPat, "", buf)
+
 	origSize = len(buf)
 	buf = buf.replace("<hr id=answer>", "")
 	hadHR = len(buf) != origSize
 
-	given = self.typedAnswer
+	# Compare answers -- replace line markup/chars with newline markers to
+	# preserve line breaks during compare.
+	# - `compare_answer` strips newlines from `expected`.
+	#   - Source: https://github.com/ankitects/anki/blob/ded805b5046e2df849103022747b94ce289bed46/rslib/src/typeanswer.rs#L106
 
-	if self.typeCorrect:
-		# compare with typed answer
-		# before stripping anki's added html, add newline markers to preserve format
-		cor = self.mw.col.media.strip(self.typeCorrect)
-		newline_marker = "__typeboxnewline__"
-		cor = re.sub(r"(<div><br>|<br>)", newline_marker, cor)
-		cor = re.sub(r"(<div>)+", newline_marker, cor)
-		cor = re.sub(r"(\r\n|\n)", newline_marker, cor)
-		cor = stripHTML(cor)
-		cor = html.unescape(cor)
-		cor = cor.replace("\xa0", " ")
-		cor = cor.replace(newline_marker, "\n")
-		cor = cor.strip()
-		res = correct(given, cor)
-	else:
-		res = self.typedAnswer
+	provided = re.sub(r"(\r\n)", "\n", self.typedAnswer)
+	expected = self.mw.col.media.strip(self.typeCorrect)
+	expected = re.sub(r"(<div><br>|<br>)", "\n", expected)
+	expected = re.sub(r"(<div>)+", "\n", expected)
+	expected = re.sub(r"(\r\n)", "\n", expected)
+	expected = stripHTML(expected)
+	expected = html.unescape(expected)
+	expected = expected.replace("\xa0", " ")
+	expected = expected.strip()
+	# Replace remaining "\n" chars with newline placeholder:
+	provided = re.sub(r"\n", self.newline_placeholder, provided)
+	expected = re.sub(r"\n", self.newline_placeholder, expected)
+	# Anki compare (backend):
+	output = self.mw.col.compare_answer(expected, provided)
+	# Restore line breaks to comparison result:
+	output = output.replace(self.newline_placeholder, "<br>")
 
 	# and update the type answer area
 	if self.card.model()["css"] and self.card.model()["css"].strip():
@@ -131,13 +136,13 @@ pre {
 """ % (
 		font_family,
 		font_size,
-		res,
+		output,
 	)
 	if hadHR:
 		# a hack to ensure the q/a separator falls before the answer
 		# comparison when user is using {{FrontSide}}
-		s = "<hr id=answer>" + s
-	return re.sub(self.typeboxAnsPat, s, buf)
+		s = f"<hr id=answer>{s}"
+	return re.sub(self.typeboxAnsPat, s.replace('\\', r'\\'), buf)
 
 def focusTypebox(card):
     """
@@ -150,83 +155,6 @@ def focusTypebox(card):
     if hasattr(mw.reviewer, "_typebox_note") and mw.reviewer._typebox_note:
         mw.web.setFocus()
 
-def tokenizeComparison(
-    given: str, correct: str
-) -> tuple[list[tuple[bool, str]], list[tuple[bool, str]]]:
-    # compare in NFC form so accents appear correct
-    given = ucd.normalize("NFC", given)
-    correct = ucd.normalize("NFC", correct)
-    s = difflib.SequenceMatcher(None, given, correct, autojunk=False)
-    givenElems: list[tuple[bool, str]] = []
-    correctElems: list[tuple[bool, str]] = []
-    givenPoint = 0
-    correctPoint = 0
-    offby = 0
-
-    def logBad(old: int, new: int, s: str, array: list[tuple[bool, str]]) -> None:
-        if old != new:
-            array.append((False, s[old:new]))
-
-    def logGood(
-        start: int, cnt: int, s: str, array: list[tuple[bool, str]]
-    ) -> None:
-        if cnt:
-            array.append((True, s[start : start + cnt]))
-
-    for x, y, cnt in s.get_matching_blocks():
-        # if anything was missed in correct, pad given
-        if cnt and y - offby > x:
-            givenElems.append((False, "-" * (y - x - offby)))
-            offby = y - x
-        # log any proceeding bad elems
-        logBad(givenPoint, x, given, givenElems)
-        logBad(correctPoint, y, correct, correctElems)
-        givenPoint = x + cnt
-        correctPoint = y + cnt
-        # log the match
-        logGood(x, cnt, given, givenElems)
-        logGood(y, cnt, correct, correctElems)
-    return givenElems, correctElems
-
-def noLoneMarks(s: str) -> str:
-    # ensure a combining character at the start does not join to
-    # previous text
-    if s and ucd.category(s[0]).startswith("M"):
-        return f"\xa0{s}"
-    return s
-
-def correct(given: str, correct: str) -> str:
-    "Diff-corrects the typed-in answer."
-    givenElems, correctElems = tokenizeComparison(given, correct)
-
-    def good(s: str) -> str:
-        return f"<span class=typeGood>{html.escape(s)}</span>"
-
-    def bad(s: str) -> str:
-        return f"<span class=typeBad>{html.escape(s)}</span>"
-
-    def missed(s: str) -> str:
-        return f"<span class=typeMissed>{html.escape(s)}</span>"
-
-    if given == correct:
-        res = good(given)
-    else:
-        res = ""
-        for ok, txt in givenElems:
-            txt = noLoneMarks(txt)
-            if ok:
-                res += good(txt)
-            else:
-                res += bad(txt)
-        res += "<br><span id=typearrow>&darr;</span><br>"
-        for ok, txt in correctElems:
-            txt = noLoneMarks(txt)
-            if ok:
-                res += good(txt)
-            else:
-                res += missed(txt)
-    res = f"<div><code id=typeans>{res}</code></div>"
-    return res
 
 gui_hooks.reviewer_did_show_question.append(focusTypebox)
 Reviewer.typeAnsFilter = typeboxAnsFilter
