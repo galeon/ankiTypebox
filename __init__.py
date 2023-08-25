@@ -6,6 +6,7 @@ from anki.utils import stripHTML
 from aqt import gui_hooks
 from aqt import mw
 import difflib
+import unicodedata as ucd
 
 Reviewer.typeboxAnsPat = r"\[\[typebox:(.*?)\]\]"
 
@@ -27,7 +28,6 @@ def typeboxAnsFilter(self, buf: str) -> str:
 		return self.typeboxAnsAnswerFilter(buf)
 
 	return self.typeAnsAnswerFilter(buf)
-
 
 def _set_font_details_from_card(reviewer, style, selector):
 	selector_rules = [r for r in style.rules if hasattr(r, "selector")]
@@ -106,7 +106,7 @@ def typeboxAnsAnswerFilter(self, buf: str) -> str:
 		cor = cor.replace("\xa0", " ")
 		cor = cor.replace(newline_marker, "\n")
 		cor = cor.strip()
-		res = compare_strings(given, cor)
+		res = correct(given, cor)
 	else:
 		res = self.typedAnswer
 
@@ -150,21 +150,83 @@ def focusTypebox(card):
     if hasattr(mw.reviewer, "_typebox_note") and mw.reviewer._typebox_note:
         mw.web.setFocus()
 
-def compare_strings(actual, expected):
-    diff = difflib.ndiff(actual, expected)
+def tokenizeComparison(
+    given: str, correct: str
+) -> tuple[list[tuple[bool, str]], list[tuple[bool, str]]]:
+    # compare in NFC form so accents appear correct
+    given = ucd.normalize("NFC", given)
+    correct = ucd.normalize("NFC", correct)
+    s = difflib.SequenceMatcher(None, given, correct, autojunk=False)
+    givenElems: list[tuple[bool, str]] = []
+    correctElems: list[tuple[bool, str]] = []
+    givenPoint = 0
+    correctPoint = 0
+    offby = 0
 
-    diff_string = ''
-    for line in diff:
-        if line.startswith('- '):
-            diff_string += f"<font color='red'><strike>{line[2:]}</strike></font>"
-        elif line.startswith('+ '):
-            diff_string += f"<font color='red'>{line[2:]}</font>"
-        elif line.startswith('  '):
-            diff_string += f"<font color='green'>{line[2:]}</font>"
-        else:
-            diff_string += line[2:]
+    def logBad(old: int, new: int, s: str, array: list[tuple[bool, str]]) -> None:
+        if old != new:
+            array.append((False, s[old:new]))
 
-    return diff_string
+    def logGood(
+        start: int, cnt: int, s: str, array: list[tuple[bool, str]]
+    ) -> None:
+        if cnt:
+            array.append((True, s[start : start + cnt]))
+
+    for x, y, cnt in s.get_matching_blocks():
+        # if anything was missed in correct, pad given
+        if cnt and y - offby > x:
+            givenElems.append((False, "-" * (y - x - offby)))
+            offby = y - x
+        # log any proceeding bad elems
+        logBad(givenPoint, x, given, givenElems)
+        logBad(correctPoint, y, correct, correctElems)
+        givenPoint = x + cnt
+        correctPoint = y + cnt
+        # log the match
+        logGood(x, cnt, given, givenElems)
+        logGood(y, cnt, correct, correctElems)
+    return givenElems, correctElems
+
+def noLoneMarks(s: str) -> str:
+    # ensure a combining character at the start does not join to
+    # previous text
+    if s and ucd.category(s[0]).startswith("M"):
+        return f"\xa0{s}"
+    return s
+
+def correct(given: str, correct: str) -> str:
+    "Diff-corrects the typed-in answer."
+    givenElems, correctElems = tokenizeComparison(given, correct)
+
+    def good(s: str) -> str:
+        return f"<span class=typeGood>{html.escape(s)}</span>"
+
+    def bad(s: str) -> str:
+        return f"<span class=typeBad>{html.escape(s)}</span>"
+
+    def missed(s: str) -> str:
+        return f"<span class=typeMissed>{html.escape(s)}</span>"
+
+    if given == correct:
+        res = good(given)
+    else:
+        res = ""
+        for ok, txt in givenElems:
+            txt = noLoneMarks(txt)
+            if ok:
+                res += good(txt)
+            else:
+                res += bad(txt)
+        res += "<br><span id=typearrow>&darr;</span><br>"
+        for ok, txt in correctElems:
+            txt = noLoneMarks(txt)
+            if ok:
+                res += good(txt)
+            else:
+                res += missed(txt)
+    res = f"<div><code id=typeans>{res}</code></div>"
+    return res
 
 gui_hooks.reviewer_did_show_question.append(focusTypebox)
 Reviewer.typeAnsFilter = typeboxAnsFilter
