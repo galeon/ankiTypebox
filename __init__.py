@@ -7,7 +7,7 @@ from aqt import gui_hooks
 from aqt import mw
 
 Reviewer.typeboxAnsPat = r"\[\[typebox:(.*?)\]\]"
-Reviewer.newline_placeholder = "__typeboxnewline__"
+Reviewer.newline_placeholder = "_̲_̲t̲y̲p̲e̲b̲o̲x̲n̲e̲w̲l̲i̲n̲e̲__"
 
 def typeboxAnsFilter(self, buf: str) -> str:
 	# replace the typebox pattern for questions, and if question has typebox,
