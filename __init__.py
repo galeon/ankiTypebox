@@ -110,6 +110,8 @@ def typeboxAnsAnswerFilter(self, buf: str) -> str:
 	# Replace remaining "\n" chars with newline placeholder:
 	provided = re.sub(r"\n", self.newline_placeholder, provided)
 	expected = re.sub(r"\n", self.newline_placeholder, expected)
+	# `compare_answer` wants "expected" to be HTML-escaped, unlike "provided" which shouldn't be HTML-escaped.
+	expected = html.escape(expected)
 	# Anki compare (backend):
 	output = self.mw.col.compare_answer(expected, provided)
 	# Restore line breaks to comparison result:
