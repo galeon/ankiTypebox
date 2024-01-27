@@ -7,7 +7,7 @@ from aqt import gui_hooks
 from aqt import mw
 
 Reviewer.typeboxAnsPat = r"\[\[typebox:(.*?)\]\]"
-Reviewer.newline_placeholder = "__typeboxnewline__"
+Reviewer.newline_placeholder = "_̲_̲t̲y̲p̲e̲b̲o̲x̲n̲e̲w̲l̲i̲n̲e̲__"
 
 def typeboxAnsFilter(self, buf: str) -> str:
 	# replace the typebox pattern for questions, and if question has typebox,
@@ -110,6 +110,8 @@ def typeboxAnsAnswerFilter(self, buf: str) -> str:
 	# Replace remaining "\n" chars with newline placeholder:
 	provided = re.sub(r"\n", self.newline_placeholder, provided)
 	expected = re.sub(r"\n", self.newline_placeholder, expected)
+	# `compare_answer` wants "expected" to be HTML-escaped, unlike "provided" which shouldn't be HTML-escaped.
+	expected = html.escape(expected)
 	# Anki compare (backend):
 	output = self.mw.col.compare_answer(expected, provided)
 	# Restore line breaks to comparison result:
